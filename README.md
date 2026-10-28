@@ -16,9 +16,47 @@ Everything is driven by two custom resources (objects you create with `kubectl`)
 
 **Hardening.** You create a `WorkloadHardening` for one or more namespaces. It first makes a **plan**: for each Deployment, StatefulSet, DaemonSet and CronJob, the exact fields it would set. Nothing changes yet. You approve the plan by copying its hash into the object. NetSec then patches one workload at a time and watches the rollout. One run applies once per object: to harden again, create a new `WorkloadHardening`. If the new pods fail, it reverts that workload. When you want the changes gone, you ask for **undo**.
 
-## Quick start
+## Install with Helm
 
-You need: Docker, [k3d](https://k3d.io), kubectl, Go (the version in `go.mod`) and Helm.
+Each release publishes the Helm chart and a multi-arch image (`linux/amd64`, `linux/arm64`) to GitHub Container Registry. The chart pulls `ghcr.io/nrndev/netsec` at the chart's version by default.
+
+**You need:**
+- Helm 3.8 or later, for OCI charts
+- a cluster whose network plugin enforces NetworkPolicy (see [Running on other clusters](#running-on-other-clusters))
+
+Pass your cluster's context on every command; your current context may point at another cluster. Replace `0.1.0` with the release you want.
+
+```bash
+# Install the operator, its CRDs and RBAC into netsec-system
+helm install netsec oci://ghcr.io/nrndev/charts/netsec --version 0.1.0 \
+  --kube-context <your-context> --namespace netsec-system --create-namespace \
+  --set 'manager.podCIDRs={10.42.0.0/16}' \
+  --set 'manager.extraAllowedCIDRs={10.42.0.0/32,10.42.1.0/32}'
+
+# Check that it is running
+kubectl --context <your-context> -n netsec-system get pods
+
+# Upgrade to a newer release, keeping your values
+helm upgrade netsec oci://ghcr.io/nrndev/charts/netsec --version <new-version> \
+  --kube-context <your-context> --namespace netsec-system --reuse-values
+
+# Uninstall: delete isolations first, so the operator removes their policies
+kubectl --context <your-context> delete networkisolation --all
+helm uninstall netsec --kube-context <your-context> --namespace netsec-system
+```
+
+The `--set` values shown are for a two-node k3d cluster. Set them for your cluster:
+
+- **`manager.podCIDRs`:** your cluster's pod range. Always set this. Without it, NetSec falls back to the ranges the Nodes report and marks each isolation `Degraded`.
+- **`manager.extraAllowedCIDRs`:** node or tunnel addresses that sit inside the pod range. Only some network plugins need them; [Running on other clusters](#running-on-other-clusters) says which.
+
+**Other values:** see every value with `helm show values oci://ghcr.io/nrndev/charts/netsec --version 0.1.0`, or the table in [dist/chart/README.md](dist/chart/README.md).
+
+**CRDs:** they stay after uninstall (`crd.keep=true`), so your objects are not lost. Delete them yourself with `kubectl delete crd networkisolations.netsec.nrnx.dev workloadhardenings.netsec.nrnx.dev`.
+
+## Quick start: build and run on k3d
+
+This builds the operator from source and runs it on a local k3d cluster. You need: Docker, [k3d](https://k3d.io), kubectl, Go (the version in `go.mod`) and Helm.
 
 > **Every command here uses the context `k3d-netsec`.** The Makefile and scripts pass `--context k3d-netsec` on every `kubectl` call. Your current kubectl context may point at a real cluster, and a plain `kubectl` or `helm` would act on it. Do the same in your own commands, and never change your current context.
 
@@ -29,25 +67,9 @@ make deploy IMG=netsec:dev          # install CRDs, RBAC and the operator
 make demo                           # sample workloads in tenant-a, tenant-b, tenant-c
 ```
 
-To install with Helm instead of `make deploy`, see [dist/chart/README.md](dist/chart/README.md). `make helm-check` does a full install, a test and an uninstall.
+To install your local build with the chart instead of `make deploy`, see [dist/chart/README.md](dist/chart/README.md). `make helm-check` does a full install, a test and an uninstall.
 
 `make k3d-up` does not move your kubectl context. `make k3d-down` deletes the cluster. `make undeploy` removes the operator.
-
-## Install from a release
-
-Each release publishes a multi-arch image (`linux/amd64`, `linux/arm64`) and the Helm chart to GitHub Container Registry. The chart pulls `ghcr.io/nrndev/netsec:<chart version>` by default. Replace `0.1.0` with the release you want:
-
-```bash
-helm install netsec oci://ghcr.io/nrndev/charts/netsec --version 0.1.0 \
-  --kube-context <your-context> --namespace netsec-system --create-namespace \
-  --set 'manager.podCIDRs={10.42.0.0/16}' \
-  --set 'manager.extraAllowedCIDRs={10.42.0.0/32,10.42.1.0/32}'
-```
-
-The values shown are for a two-node k3d cluster. For your cluster, see [Running on other clusters](#running-on-other-clusters):
-
-- **`manager.podCIDRs`:** always set this. Without it, NetSec falls back to the ranges the Nodes report and marks each isolation `Degraded`.
-- **`manager.extraAllowedCIDRs`:** only needed when node or tunnel addresses sit inside the pod range.
 
 ## Using it
 
