@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- netsec_v1alpha1_networkisolation.yaml
+- netsec_v1alpha1_workloadhardening.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

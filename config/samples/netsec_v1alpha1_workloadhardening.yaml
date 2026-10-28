@@ -1,0 +1,9 @@
+apiVersion: netsec.nrnx.dev/v1alpha1
+kind: WorkloadHardening
+metadata:
+  labels:
+    app.kubernetes.io/name: netsec
+    app.kubernetes.io/managed-by: kustomize
+  name: workloadhardening-sample
+spec:
+  # TODO(user): Add fields here
