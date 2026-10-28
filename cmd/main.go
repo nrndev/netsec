@@ -19,12 +19,17 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"net/netip"
 	"os"
+	"slices"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -37,6 +42,7 @@ import (
 
 	netsecv1alpha1 "github.com/nrndev/netsec/api/v1alpha1"
 	"github.com/nrndev/netsec/internal/controller"
+	"github.com/nrndev/netsec/internal/isolation"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -62,6 +68,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var protectedNamespaces, podCIDRs, extraAllowedCIDRs string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -82,8 +89,20 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&protectedNamespaces, "protected-namespaces", defaultProtectedNamespaces(),
+		"Comma-separated namespaces the operator refuses to isolate or harden. The operator's own namespace, "+
+			"kube-system, kube-public and kube-node-lease are always added to this list. "+
+			"Names starting with kube- are always refused.")
+	flag.StringVar(&podCIDRs, "pod-cidrs", "",
+		"Comma-separated cluster-wide pod range(s), used to keep pod IPs out of the allowed address blocks. "+
+			"If unset, the ranges that Nodes report are used and the isolation is marked Degraded.")
+	flag.StringVar(&extraAllowedCIDRs, "extra-allowed-cidrs", "",
+		"Comma-separated node or tunnel addresses inside the pod range that every policy must still allow, "+
+			"for example flannel.1 or Calico tunnel addresses. Each must be a single address (/32 or /128) "+
+			"if it is inside the pod range.")
+	// Production mode: JSON lines, info level. --zap-devel and the other --zap-* flags override it.
 	opts := zap.Options{
-		Development: true,
+		TimeEncoder: zapcore.ISO8601TimeEncoder,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -158,6 +177,25 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	protected := withAlwaysProtected(splitList(protectedNamespaces))
+	cidrs := splitList(podCIDRs)
+	if err := checkCIDRs(cidrs); err != nil {
+		setupLog.Error(err, "Invalid --pod-cidrs")
+		os.Exit(1)
+	}
+
+	extra := splitList(extraAllowedCIDRs)
+	if err := checkCIDRs(extra); err != nil {
+		setupLog.Error(err, "Invalid --extra-allowed-cidrs")
+		os.Exit(1)
+	}
+	if len(cidrs) > 0 {
+		if err := isolation.CheckExtraAllowed(extra, cidrs); err != nil {
+			setupLog.Error(err, "Invalid --extra-allowed-cidrs")
+			os.Exit(1)
+		}
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -183,17 +221,15 @@ func main() {
 	}
 
 	if err := (&controller.NetworkIsolationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorder("netsec-isolation"),
+		ProtectedNamespaces: protected,
+		PodCIDRs:            cidrs,
+		ExtraAllowedCIDRs:   extra,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "networkisolation")
-		os.Exit(1)
-	}
-	if err := (&controller.WorkloadHardeningReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "workloadhardening")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -212,4 +248,51 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// defaultProtectedNamespaces is the system namespaces plus the operator's own.
+func defaultProtectedNamespaces() string {
+	return "kube-system,kube-public,kube-node-lease," + operatorNamespace()
+}
+
+// withAlwaysProtected adds the namespaces that can never be isolated or hardened, whatever
+// --protected-namespaces says: the system namespaces and the operator's own.
+func withAlwaysProtected(list []string) []string {
+	out := slices.Clone(list)
+	for _, ns := range splitList(defaultProtectedNamespaces()) {
+		if !slices.Contains(out, ns) {
+			out = append(out, ns)
+		}
+	}
+	return out
+}
+
+// operatorNamespace is the namespace the operator runs in.
+func operatorNamespace() string {
+	if own := os.Getenv("POD_NAMESPACE"); own != "" {
+		return own
+	}
+	return "netsec-system"
+}
+
+// splitList splits a comma-separated flag value and drops blanks.
+func splitList(s string) []string {
+	var out []string
+	for v := range strings.SplitSeq(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// checkCIDRs fails on the first value that is not a CIDR, so a typo stops startup
+// instead of breaking every isolation later.
+func checkCIDRs(cidrs []string) error {
+	for _, c := range cidrs {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			return fmt.Errorf("%q is not a CIDR: %w", c, err)
+		}
+	}
+	return nil
 }
