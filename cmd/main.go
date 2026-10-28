@@ -232,6 +232,17 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "networkisolation")
 		os.Exit(1)
 	}
+	if err := (&controller.WorkloadHardeningReconciler{
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorder("netsec-hardening"),
+		ProtectedNamespaces: protected,
+		Namespace:           operatorNamespace(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "workloadhardening")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

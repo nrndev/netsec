@@ -21,6 +21,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	netsecv1alpha1 "github.com/nrndev/netsec/api/v1alpha1"
 )
 
 // NetSec's own metrics (design §5). They sit on controller-runtime's registry, so the
@@ -35,14 +37,22 @@ var (
 		Name: "netsec_isolation_refusals_total",
 		Help: "Times a NetworkIsolation moved into a not-ready reason.",
 	}, []string{"reason"})
+
+	hardeningWorkloads = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "netsec_hardening_workloads_total",
+		Help: "Times a workload reached a final state in a WorkloadHardening run.",
+	}, []string{"result"})
 )
 
 func init() {
-	metrics.Registry.MustRegister(isolationReady, isolationRefusals)
+	metrics.Registry.MustRegister(isolationReady, isolationRefusals, hardeningWorkloads)
 	// Show every counter series at 0 from the start, so a scrape and a rate() see them
 	// before the first event.
 	for reason := range refusalReasons {
 		isolationRefusals.WithLabelValues(reason)
+	}
+	for state := range countedStates {
+		hardeningWorkloads.WithLabelValues(string(state))
 	}
 }
 
@@ -54,6 +64,34 @@ var refusalReasons = map[string]bool{
 	"InvalidExtraAllowedCIDRs": true,
 	reasonPodRangeMismatch:     true,
 	"NamespaceMissing":         true,
+}
+
+// countedStates are the states that count as a workload's result.
+var countedStates = map[netsecv1alpha1.WorkloadState]bool{
+	netsecv1alpha1.StateHealthy:    true,
+	netsecv1alpha1.StateUnverified: true,
+	netsecv1alpha1.StateReverted:   true,
+	netsecv1alpha1.StateFailed:     true,
+	netsecv1alpha1.StateSkipped:    true,
+	netsecv1alpha1.StateNoChange:   true,
+	netsecv1alpha1.StateUndone:     true,
+}
+
+// countWorkloadResults adds one to the counter for each workload whose state changed to
+// a counted state between old and cur. Workloads are matched by kind, namespace and name,
+// so a workload that is new in cur is not counted.
+func countWorkloadResults(old, cur []netsecv1alpha1.PlannedWorkload) {
+	type key struct{ kind, ns, name string }
+	was := make(map[key]netsecv1alpha1.WorkloadState, len(old))
+	for _, w := range old {
+		was[key{string(w.Kind), w.Namespace, w.Name}] = w.State
+	}
+	for _, w := range cur {
+		prev, ok := was[key{string(w.Kind), w.Namespace, w.Name}]
+		if ok && prev != w.State && countedStates[w.State] {
+			hardeningWorkloads.WithLabelValues(string(w.State)).Inc()
+		}
+	}
 }
 
 // lastReason is the Ready reason last seen per isolation, by name. The reconciler reads
