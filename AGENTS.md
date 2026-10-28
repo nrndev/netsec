@@ -259,13 +259,7 @@ make build-installer IMG=<registry>/<project>:tag
 
 **Key points:**
 - The `dist/install.yaml` is generated from Kustomize manifests (CRDs, RBAC, Deployment)
-- Commit this file to your repository for easy distribution
-- Users only need `kubectl` to install (no additional tools required)
-
-**Example:** Users install with a single command:
-```bash
-kubectl apply -f https://raw.githubusercontent.com/<org>/<repo>/<tag>/dist/install.yaml
-```
+- This repo generates the file on demand and does not commit it (`/dist/install.yaml` is gitignored)
 
 ### Option 2: Helm Chart
 

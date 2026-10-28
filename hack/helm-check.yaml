@@ -1,0 +1,23 @@
+# Used by `make helm-check`: two empty namespaces of its own and an isolation between
+# them, so the check never touches the demo or anything else on the cluster.
+# Empty namespaces are enough for Ready=True; Degraded=NoMatchingPods is expected.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helm-check-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helm-check-b
+---
+apiVersion: netsec.nrnx.dev/v1alpha1
+kind: NetworkIsolation
+metadata:
+  name: helm-check
+spec:
+  between:
+    - name: group-a
+      namespaces: [helm-check-a]
+    - name: group-b
+      namespaces: [helm-check-b]

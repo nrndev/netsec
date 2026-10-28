@@ -6,12 +6,15 @@ cliVersion: 4.16.0
 domain: nrnx.dev
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/install.yaml
+    output: dist
 projectName: netsec
 repo: github.com/nrndev/netsec
 resources:
 - api:
     crdVersion: v1
-    namespaced: true
   controller: true
   domain: nrnx.dev
   group: netsec
@@ -20,7 +23,6 @@ resources:
   version: v1alpha1
 - api:
     crdVersion: v1
-    namespaced: true
   controller: true
   domain: nrnx.dev
   group: netsec

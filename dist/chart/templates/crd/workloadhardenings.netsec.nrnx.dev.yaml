@@ -1,0 +1,462 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: workloadhardenings.netsec.nrnx.dev
+spec:
+  group: netsec.nrnx.dev
+  names:
+    kind: WorkloadHardening
+    listKind: WorkloadHardeningList
+    plural: workloadhardenings
+    shortNames:
+    - wh
+    singular: workloadhardening
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.summary
+      name: Summary
+      type: string
+    - jsonPath: .status.plan.hash
+      name: Plan
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkloadHardening plans, applies and undoes safe securityContext and resource
+          defaults on workloads. Nothing changes until a plan is approved.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of WorkloadHardening
+            properties:
+              action:
+                default: Plan
+                description: action is Plan, Apply or Undo.
+                enum:
+                - Plan
+                - Apply
+                - Undo
+                type: string
+              approvedPlanHash:
+                description: 'approvedPlanHash: copy status.plan.hash here, with action:
+                  Apply, to approve exactly that plan.'
+                pattern: ^([0-9a-f]{16})?$
+                type: string
+              defaultResources:
+                default:
+                  enabled: true
+                  limits:
+                    memory: 512Mi
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                description: |-
+                  defaultResources are set only on containers that have none, unless a
+                  namespace LimitRange sets a default for that resource.
+                  Existing values are never lowered.
+                properties:
+                  enabled:
+                    default: true
+                    description: enabled turns resource defaults on or off.
+                    type: boolean
+                  limits:
+                    default: {}
+                    description: limits are the default limits. A CPU limit is never
+                      set.
+                    properties:
+                      memory:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 512Mi
+                        description: memory must be at least requests.memory and at
+                          most 8Gi.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: limits.memory must be at most 8Gi
+                          rule: quantity(string(self)).compareTo(quantity('8Gi'))
+                            <= 0
+                    type: object
+                  requests:
+                    default: {}
+                    description: requests are the default requests.
+                    properties:
+                      cpu:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 100m
+                        description: cpu must be more than 0 and at most 2.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: requests.cpu must be more than 0 and at most 2
+                          rule: quantity(string(self)).isGreaterThan(quantity('0'))
+                            && quantity(string(self)).compareTo(quantity('2')) <=
+                            0
+                      memory:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 128Mi
+                        description: memory must be more than 0 and at most 4Gi.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: requests.memory must be more than 0 and at most
+                            4Gi
+                          rule: quantity(string(self)).isGreaterThan(quantity('0'))
+                            && quantity(string(self)).compareTo(quantity('4Gi')) <=
+                            0
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: limits.memory must be at least requests.memory
+                  rule: quantity(string(self.limits.memory)).compareTo(quantity(string(self.requests.memory)))
+                    >= 0
+              maxConcurrentRollouts:
+                default: 1
+                description: maxConcurrentRollouts is how many workloads roll out
+                  at once (1 to 10).
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
+              namespaces:
+                description: namespaces lists 1 to 20 namespaces to harden. Names
+                  starting with "kube-" are not allowed.
+                items:
+                  maxLength: 63
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                  type: string
+                maxItems: 20
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: namespaces must not start with kube-
+                  rule: self.all(n, !n.startsWith('kube-'))
+              rolloutTimeout:
+                default: 5m
+                description: rolloutTimeout is how long one workload may take to become
+                  healthy (1m to 30m). The limit is per workload.
+                type: string
+                x-kubernetes-validations:
+                - message: rolloutTimeout must be between 1m and 30m
+                  rule: duration(self) >= duration('1m') && duration(self) <= duration('30m')
+              strictSecurity:
+                default: {}
+                description: |-
+                  strictSecurity turns on extra settings that can stop some images from starting.
+                  The safe ones (seccomp RuntimeDefault, no privilege escalation) are always applied.
+                properties:
+                  dropAllCapabilities:
+                    description: 'dropAllCapabilities sets capabilities.drop: [ALL]
+                      on each container.'
+                    type: boolean
+                  readOnlyRootFilesystem:
+                    description: 'readOnlyRootFilesystem sets readOnlyRootFilesystem:
+                      true on each container.'
+                    type: boolean
+                  runAsNonRoot:
+                    description: 'runAsNonRoot sets runAsNonRoot: true on the pod.'
+                    type: boolean
+                type: object
+              workloadKinds:
+                default:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+                - CronJob
+                description: workloadKinds lists the workload types to patch. The
+                  default is all four.
+                items:
+                  description: WorkloadKind is a workload type that hardening can
+                    patch.
+                  enum:
+                  - Deployment
+                  - StatefulSet
+                  - DaemonSet
+                  - CronJob
+                  type: string
+                maxItems: 4
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              workloadSelector:
+                description: |-
+                  workloadSelector picks workloads by the workload's own labels (not the pod template's).
+                  Empty means all.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: 'workloadSelector: operator must be In, NotIn, Exists or
+                    DoesNotExist'
+                  rule: '!has(self.matchExpressions) || self.matchExpressions.all(e,
+                    e.operator in [''In'',''NotIn'',''Exists'',''DoesNotExist''])'
+                - message: 'workloadSelector: In and NotIn need at least one value;
+                    Exists and DoesNotExist must have none'
+                  rule: '!has(self.matchExpressions) || self.matchExpressions.all(e,
+                    (e.operator in [''In'',''NotIn'']) ? (has(e.values) && size(e.values)
+                    > 0) : (!has(e.values) || size(e.values) == 0))'
+            required:
+            - namespaces
+            type: object
+            x-kubernetes-validations:
+            - message: approvedPlanHash is required when action is Apply; copy it
+                from status.plan.hash
+              rule: self.action != 'Apply' || (has(self.approvedPlanHash) && size(self.approvedPlanHash)
+                > 0)
+          status:
+            description: status defines the observed state of WorkloadHardening
+            properties:
+              conditions:
+                description: conditions are Ready, Degraded, PlanStale and Refused.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the spec generation this status
+                  describes.
+                format: int64
+                type: integer
+              phase:
+                description: phase is where this object is in its life.
+                enum:
+                - Planning
+                - Planned
+                - Applying
+                - Completed
+                - Failed
+                - Undoing
+                - Undone
+                type: string
+              plan:
+                description: plan is the current plan.
+                properties:
+                  hash:
+                    description: hash identifies this exact plan. Copy it to spec.approvedPlanHash
+                      to approve it.
+                    type: string
+                  workloads:
+                    description: workloads lists every target and what would change.
+                    items:
+                      description: PlannedWorkload is one workload in the plan.
+                      properties:
+                        appliedAt:
+                          description: appliedAt is when the patch was sent. Pods
+                            created after it are checked by the health gate.
+                          format: date-time
+                          type: string
+                        changes:
+                          description: 'changes lists each field to set, as "path:
+                            old → new".'
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        failedRevision:
+                          description: |-
+                            failedRevision is set only for StatefulSets.
+                            The StatefulSet revision whose pods failed; NetSec deletes them after the revert.
+                          type: string
+                        generation:
+                          description: generation is the workload's generation when
+                            it was planned, then when it was patched.
+                          format: int64
+                          type: integer
+                        kind:
+                          description: kind is the workload type.
+                          enum:
+                          - Deployment
+                          - StatefulSet
+                          - DaemonSet
+                          - CronJob
+                          type: string
+                        name:
+                          description: name is the workload's name.
+                          type: string
+                        namespace:
+                          description: namespace is the workload's namespace.
+                          type: string
+                        reason:
+                          description: reason explains the state, for example why
+                            a workload was skipped, failed or reverted.
+                          type: string
+                        state:
+                          description: state is where this workload is.
+                          enum:
+                          - Pending
+                          - Applying
+                          - Healthy
+                          - Unverified
+                          - Reverted
+                          - Failed
+                          - Skipped
+                          - NoChange
+                          - Undoing
+                          - Undone
+                          type: string
+                        warnings:
+                          description: |-
+                            warnings lists risks seen in this workload that NetSec will not fix.
+                            They are not part of the plan hash.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - kind
+                      - name
+                      - namespace
+                      - state
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - hash
+                type: object
+              summary:
+                description: summary is a one-line count of what is happening, such
+                  as "3 to change, 2 skipped".
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}
