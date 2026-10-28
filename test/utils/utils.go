@@ -14,213 +14,171 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package utils holds helpers shared by the e2e specs. Every call goes to the
+// local k3d cluster through one fixed kubectl context; the machine's current
+// context (production) is never read or used.
 package utils
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
-
-	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
+	"time"
 )
 
-const (
-	certmanagerVersion = "v1.21.1"
-	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+// Context is the only kubectl context the tests may use.
+const Context = "k3d-netsec"
 
-	defaultKindBinary  = "kind"
-	defaultKindCluster = "kind"
-)
+// CallTimeout bounds every kubectl call so a hung cluster fails a spec instead of the suite.
+const CallTimeout = 90 * time.Second
 
-func warnError(err error) {
-	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
+// Kubectl runs kubectl against k3d-netsec and returns its stdout. On failure the
+// error holds the command and stderr.
+func Kubectl(args ...string) (string, error) {
+	return KubectlStdin("", args...)
 }
 
-// Run executes the provided command within this context
-func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
-	cmd.Dir = dir
-
-	if err := os.Chdir(cmd.Dir); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
-	}
-
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
-	command := strings.Join(cmd.Args, " ")
-	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", command)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("%q failed with error %q: %w", command, string(output), err)
-	}
-
-	return string(output), nil
+// KubectlStdin is Kubectl with stdin set to in (for "apply -f -").
+func KubectlStdin(in string, args ...string) (string, error) {
+	full := append([]string{"--context", Context}, args...)
+	return run(in, "kubectl", full...)
 }
 
-// UninstallCertManager uninstalls the cert manager
-func UninstallCertManager() {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		warnError(err)
+func run(in, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	if in != "" {
+		cmd.Stdin = strings.NewReader(in)
 	}
-
-	// Delete leftover leases in kube-system (not cleaned by default)
-	kubeSystemLeases := []string{
-		"cert-manager-cainjector-leader-election",
-		"cert-manager-controller",
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start %s: %w", name, err)
 	}
-	for _, lease := range kubeSystemLeases {
-		cmd = exec.Command("kubectl", "delete", "lease", lease,
-			"-n", "kube-system", "--ignore-not-found", "--force", "--grace-period=0")
-		if _, err := Run(cmd); err != nil {
-			warnError(err)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return stdout.String(), fmt.Errorf("%s %s: %w: %s",
+				name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 		}
+		return stdout.String(), nil
+	case <-time.After(CallTimeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return stdout.String(), fmt.Errorf("%s %s: timed out after %s", name, strings.Join(args, " "), CallTimeout)
 	}
 }
 
-// InstallCertManager installs the cert manager bundle.
-func InstallCertManager() error {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "apply", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		return err
-	}
-	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
-	// was re-installed after uninstalling on a cluster.
-	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
-		"--for", "condition=Available",
-		"--namespace", "cert-manager",
-		"--timeout", "5m",
-	)
-
-	_, err := Run(cmd)
+// Apply creates or updates the objects in a YAML document.
+func Apply(yaml string) error {
+	_, err := KubectlStdin(yaml, "apply", "-f", "-")
 	return err
 }
 
-// IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
-// by verifying the existence of key CRDs related to Cert Manager.
-func IsCertManagerCRDsInstalled() bool {
-	// List of common Cert Manager CRDs
-	certManagerCRDs := []string{
-		"certificates.cert-manager.io",
-		"issuers.cert-manager.io",
-		"clusterissuers.cert-manager.io",
-		"certificaterequests.cert-manager.io",
-		"orders.acme.cert-manager.io",
-		"challenges.acme.cert-manager.io",
-	}
-
-	// Execute the kubectl command to get all CRDs
-	cmd := exec.Command("kubectl", "get", "crds")
-	output, err := Run(cmd)
-	if err != nil {
-		return false
-	}
-
-	// Check if any of the Cert Manager CRDs are present
-	crdList := GetNonEmptyLines(output)
-	for _, crd := range certManagerCRDs {
-		for _, line := range crdList {
-			if strings.Contains(line, crd) {
-				return true
-			}
-		}
-	}
-
-	return false
+// Docker runs docker, for the checks that need a shell on a k3d node container.
+func Docker(args ...string) (string, error) {
+	return run("", "docker", args...)
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
-func LoadImageToKindClusterWithName(name string) error {
-	cluster := defaultKindCluster
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
-	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	kindBinary := defaultKindBinary
-	if v, ok := os.LookupEnv("KIND"); ok {
-		kindBinary = v
-	}
-	cmd := exec.Command(kindBinary, kindOptions...)
-	_, err := Run(cmd)
-	return err
+// Pod is a running pod that specs send probes from or to.
+type Pod struct {
+	Namespace, Name, IP string
 }
 
-// GetNonEmptyLines converts given command output string into individual objects
-// according to line breakers, and ignores the empty elements in it.
-func GetNonEmptyLines(output string) []string {
-	var res []string
-	elements := strings.SplitSeq(output, "\n")
-	for element := range elements {
-		if element != "" {
-			res = append(res, element)
-		}
+// PodsByLabel returns the running pods with the label (for example "app=gateway") in ns.
+func PodsByLabel(ns, label string) ([]Pod, error) {
+	out, err := Kubectl("-n", ns, "get", "pods", "-l", label,
+		"--field-selector=status.phase=Running",
+		"-o", `go-template={{range .items}}{{if not .metadata.deletionTimestamp}}`+
+			`{{.metadata.name}} {{.status.podIP}}{{"\n"}}{{end}}{{end}}`)
+	if err != nil {
+		return nil, err
 	}
-
-	return res
+	f := strings.Fields(out)
+	pods := make([]Pod, 0, len(f)/2)
+	for i := 0; i+1 < len(f); i += 2 {
+		pods = append(pods, Pod{Namespace: ns, Name: f[i], IP: f[i+1]})
+	}
+	return pods, nil
 }
 
-// GetProjectDir will return the directory where the project is
-func GetProjectDir() (string, error) {
-	wd, err := os.Getwd()
+// PodByLabel is PodsByLabel for a label that must match exactly one pod. It errors
+// otherwise, so callers can wait on it with Eventually.
+func PodByLabel(ns, label string) (Pod, error) {
+	pods, err := PodsByLabel(ns, label)
 	if err != nil {
-		return wd, fmt.Errorf("failed to get current working directory: %w", err)
+		return Pod{}, err
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
-	return wd, nil
+	if len(pods) != 1 {
+		return Pod{}, fmt.Errorf("want exactly one running pod with %s in %s, got %d", label, ns, len(pods))
+	}
+	return pods[0], nil
 }
 
-// UncommentCode searches for target in the file and remove the comment prefix
-// of the target content. The target content may span multiple lines.
-func UncommentCode(filename, target, prefix string) error {
-	// false positive
-	// nolint:gosec
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return fmt.Errorf("failed to read file %q: %w", filename, err)
+// HTTPCode sends one HTTP GET from the pod with curl and returns the status code.
+// A refused or timed-out connection gives "000" (blocked connections are refused at
+// once, design 12.1, so a short timeout is enough). The pod's image must have curl.
+func HTTPCode(from Pod, url string) (string, error) {
+	out, err := Kubectl("-n", from.Namespace, "exec", from.Name, "--",
+		"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "3", url)
+	// curl exits non-zero (7 refused, 28 timeout) when it cannot connect; that is an answer, not a failure.
+	if code := strings.TrimSpace(out); code != "" {
+		return code, nil
 	}
-	strContent := string(content)
+	return "", err
+}
 
-	idx := strings.Index(strContent, target)
-	if idx < 0 {
-		return fmt.Errorf("unable to find the code %q to be uncommented", target)
-	}
+// Reachable reports whether an HTTP status code means the request got through.
+func Reachable(code string) bool { return code == "200" }
 
-	out := new(bytes.Buffer)
-	_, err = out.Write(content[:idx])
-	if err != nil {
-		return fmt.Errorf("failed to write to output: %w", err)
-	}
+// Probe is one cell of the traffic matrix.
+type Probe struct {
+	Name string // for example "A→B ip"
+	From Pod
+	URL  string
+	Want bool // true: the request must get through
+}
 
-	scanner := bufio.NewScanner(bytes.NewBufferString(target))
-	if !scanner.Scan() {
-		return nil
-	}
-	for {
-		if _, err = out.WriteString(strings.TrimPrefix(scanner.Text(), prefix)); err != nil {
-			return fmt.Errorf("failed to write to output: %w", err)
+// Result is what a probe saw.
+type Result struct {
+	Probe
+	Code string
+}
+
+// Ok reports whether the result matches what was wanted.
+func (r Result) Ok() bool { return Reachable(r.Code) == r.Want }
+
+// RunMatrix sends every probe and returns the results in order.
+func RunMatrix(probes []Probe) ([]Result, error) {
+	res := make([]Result, 0, len(probes))
+	for _, p := range probes {
+		code, err := HTTPCode(p.From, p.URL)
+		if err != nil {
+			return nil, fmt.Errorf("probe %s: %w", p.Name, err)
 		}
-		// Avoid writing a newline in case the previous line was the last in target.
-		if !scanner.Scan() {
-			break
+		res = append(res, Result{Probe: p, Code: code})
+	}
+	return res, nil
+}
+
+// Mismatches lists the results that differ from what was wanted, one line each.
+func Mismatches(res []Result) []string {
+	var bad []string
+	for _, r := range res {
+		if !r.Ok() {
+			bad = append(bad, fmt.Sprintf("%s: want reachable=%v, got HTTP %s (%s)", r.Name, r.Want, r.Code, r.URL))
 		}
-		if _, err = out.WriteString("\n"); err != nil {
-			return fmt.Errorf("failed to write to output: %w", err)
-		}
 	}
+	return bad
+}
 
-	if _, err = out.Write(content[idx+len(target):]); err != nil {
-		return fmt.Errorf("failed to write to output: %w", err)
+// Reachability maps probe names to whether they got through, to compare two matrices.
+func Reachability(res []Result) map[string]bool {
+	m := make(map[string]bool, len(res))
+	for _, r := range res {
+		m[r.Name] = Reachable(r.Code)
 	}
-
-	// false positive
-	// nolint:gosec
-	if err = os.WriteFile(filename, out.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write file %q: %w", filename, err)
-	}
-
-	return nil
+	return m
 }
