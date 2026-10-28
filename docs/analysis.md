@@ -130,12 +130,19 @@ Why k3d is simpler here:
 What we give up:
 
 - **kind is the Kubernetes project's own test cluster** and runs the upstream components, such as kube-proxy. k3s swaps some of them: kube-router for policies, flannel for networking, and an embedded datastore. A bug that only shows up on the upstream components would slip past our tests.
-- **Our isolation results are kube-router's.** Another policy engine can differ at the edges, for example with open connections or with `ipBlock` and pod IPs. The README's "Running on other clusters" table therefore marks kind as "expected (untested)".
+- **Our full-suite results are kube-router's.** Another policy engine can differ at the edges, for example with open connections or with `ipBlock` and pod IPs.
 
-How to close the gap: run the same e2e suite on kind in CI. The specs don't depend on k3d itself; they need a kubectl context and a way to load images. So the change is:
+Part of the gap is closed. `hack/verify-isolation.sh`, run with `KUBE_CONTEXT=kind-netsec`, passed on kind v0.33.0 (Kubernetes v1.37.0, kindnet, two nodes):
+- every probe matched before, during and after isolation, by pod IP and through the Service
+- the isolation reported Ready
+- the operator logged no errors
+
+The README's "Running on other clusters" table marks kind as "tested (traffic check)", and its "On another cluster" section has the steps.
+
+What is still open is the full e2e suite on kind, ideally in CI. The specs don't depend on k3d itself; they need a kubectl context and a way to load images. So the change is:
 
 - a second cluster target in the Makefile
 - a configurable context in `test/utils`
-- `kind load docker-image` in place of the k3d image import
+- an image import per node: `kind load docker-image` fails on Docker Desktop for multi-platform images, so save only the local platform, as `make k3d-load` does
 
 No new tests are needed.

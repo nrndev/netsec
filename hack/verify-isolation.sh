@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Checks NetworkIsolation with real traffic on the local k3d-netsec cluster.
+# Checks NetworkIsolation with real traffic, on the local k3d-netsec cluster by default.
+# Set KUBE_CONTEXT to check another cluster, for example KUBE_CONTEXT=kind-netsec.
 #
 # It deploys its own small workloads in namespaces verify-a, verify-b and verify-c
 # (it does not use `make demo`), prints a traffic matrix before, during and after a
 # sample isolation of verify-a/gateway and verify-b/dashboard, and exits non-zero if
 # any probe differs from what is expected. It needs the operator to be running
-# (`make deploy IMG=...` or `make run`). It removes what it created when it ends.
+# (`make deploy IMG=...` or `make run`) and the two nginx test images on every node.
+# It removes what it created when it ends.
 set -euo pipefail
 
-KUBECTL=(kubectl --context k3d-netsec) # never the current context: it may be production
+# Always an explicit context, never the current one: it may be production.
+CONTEXT="${KUBE_CONTEXT:-k3d-netsec}"
+KUBECTL=(kubectl --context "$CONTEXT")
+echo "== using kubectl context $CONTEXT =="
 ISO=verify-gateway-dashboard
 NSS=(verify-a verify-b verify-c)
 failures=0
@@ -33,7 +38,7 @@ spec:
       containers:
       - name: $2
         image: $3
-        imagePullPolicy: Never # test images are loaded by make k3d-load-test-images
+        imagePullPolicy: Never # test images are loaded into the nodes first (make k3d-load-test-images on k3d)
         ports: [{name: http, containerPort: $4}]
         readinessProbe: {httpGet: {path: /, port: http}}
 ---

@@ -259,6 +259,31 @@ dashboard>gateway svc        000   blocked   ok
 OK: every probe matched in all three phases
 ```
 
+### On another cluster
+
+The script uses the context `k3d-netsec` unless you set `KUBE_CONTEXT`. Install the operator first, and load the two nginx test images (`nginx:1.31.6-alpine`, `nginxinc/nginx-unprivileged:1.31.6-alpine`) onto every node, because the test pods never pull images.
+
+This is how it was checked on kind. The kubeconfig goes to its own file, so your current context is never touched:
+
+```bash
+export KUBECONFIG=$PWD/kind.kubeconfig
+printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n- role: control-plane\n- role: worker\n' > kind.yaml
+kind create cluster --name netsec --config kind.yaml
+make docker-build IMG=netsec:dev
+# Load the images node by node. `kind load docker-image` fails on Docker Desktop for
+# multi-platform images, so save only your own platform (linux/arm64 on Apple silicon).
+for node in netsec-control-plane netsec-worker; do
+  for img in netsec:dev nginx:1.31.6-alpine nginxinc/nginx-unprivileged:1.31.6-alpine; do
+    docker save --platform linux/arm64 "$img" | docker exec -i "$node" ctr -n k8s.io images import --snapshotter=overlayfs -
+  done
+done
+helm install netsec dist/chart --kube-context kind-netsec --namespace netsec-system --create-namespace \
+  --set manager.image.repository=netsec --set manager.image.tag=dev \
+  --set 'manager.podCIDRs={10.244.0.0/16}' --wait
+KUBE_CONTEXT=kind-netsec hack/verify-isolation.sh
+kind delete cluster --name netsec
+```
+
 ## Tests
 
 | Layer | Command | What it covers |
@@ -281,12 +306,12 @@ The full gate is `make lint test test-e2e`. Run `make test-e2e` and `make verify
 
 ## Running on other clusters
 
-NetSec was built and tested on k3s (flannel + kube-router). Its "allow everything except the other group" policies use an `ipBlock` that excepts the pod range, so two things must be right on any cluster: the **pod range** NetSec is given, and the **node or tunnel addresses** that sit inside it. NetSec cannot see your network plugin (CNI), so it asks you for both and checks what it can.
+NetSec was built and fully tested on k3s (flannel + kube-router), and its traffic check also passed on kind (kindnet). Its "allow everything except the other group" policies use an `ipBlock` that excepts the pod range, so two things must be right on any cluster: the **pod range** NetSec is given, and the **node or tunnel addresses** that sit inside it. NetSec cannot see your network plugin (CNI), so it asks you for both and checks what it can.
 
 | Cluster / plugin | Enforces NetworkPolicy? | Own pod range? | Status | What to set | Known gaps |
 |---|---|---|---|---|---|
 | k3s / k3d (flannel + kube-router) | yes | yes | **tested** | `--pod-cidrs=10.42.0.0/16`, `--extra-allowed-cidrs` = each node's `flannel.1` address (the network address of its `spec.podCIDR`) | |
-| kind (kindnet) | yes | yes | expected (untested) | `--pod-cidrs=10.244.0.0/16` | No tunnel addresses needed. |
+| kind (kindnet) | yes | yes | **tested (traffic check)** | `--pod-cidrs=10.244.0.0/16` | No tunnel addresses needed. `hack/verify-isolation.sh` passed on kind v0.33.0 (Kubernetes v1.37.0, two nodes); see [On another cluster](#on-another-cluster). The full e2e suite runs only on k3d. |
 | Calico (and AKS/EKS with Calico) | yes | yes | expected (untested) | `--extra-allowed-cidrs` = the nodes' tunnel addresses, from the `projectcalico.org/IPv4VXLANTunnelAddr` or `IPv4IPIPTunnelAddr` annotations | Untested. List every node, and update the list when nodes change. |
 | Cilium (and GKE Dataplane V2) | yes | yes | expected (untested) | `--pod-cidrs`, and tunnel addresses if any | Cilium's CIDR rules don't match cluster nodes, so outside traffic forwarded between nodes may be blocked whatever you list. Untested. |
 | AKS Azure CNI Overlay with Azure NPM, Calico or Cilium | yes | yes | expected (untested) | `--pod-cidrs` = the cluster's `podCidr` | |
@@ -334,7 +359,7 @@ Limits:
 - **Hardening cannot see everything.** Whether an image runs as root is only learned at rollout; the health gate then reverts. CronJob changes stay `Unverified` until the next run. During a failed Deployment rollout, capacity can dip by up to `maxUnavailable` until the revert finishes.
 - **`pods/delete` is cluster-wide.** RBAC cannot scope it to "pods we broke". It is needed for the StatefulSet revert, and it is narrower than the template-patch right the operator already has.
 - **Pods rejected when they are created are only caught by the rollout timeout.** Examples: a LimitRange `maxLimitRequestRatio`, a Pod-level LimitRange, or a ResourceQuota that our default requests exceed. The health gate does not detect "rejected at creation", so the revert waits for `rolloutTimeout`.
-- **Other network plugins are untested.** Only k3d with flannel and kube-router is tested. See "Running on other clusters" for what is expected elsewhere and what NetSec checks for you.
+- **Most other network plugins are untested.** k3d (flannel + kube-router) runs the full test suite. kind (kindnet) passed the traffic check (`hack/verify-isolation.sh`), but not the full e2e suite. Calico, Cilium and the cloud plugins are untested. See "Running on other clusters" for what is expected elsewhere and what NetSec checks for you.
 
 With more time:
 
@@ -344,7 +369,7 @@ With more time:
 - Optional termination of open connections.
 - Resource sizing from observed usage instead of static defaults.
 - A Prometheus alert rule for `netsec_isolation_ready == 0`.
-- Tests on a second CNI, and on a multi-node cloud cluster.
+- The full e2e suite on kind (its traffic check already passes) and on Calico or Cilium, and tests on a multi-node cloud cluster.
 
 ## Tools and why
 
