@@ -30,7 +30,7 @@ resources:
 # [NETWORK POLICY] Control ingress to metrics and webhook ports.
 # Allow metrics traffic from pods in namespaces labeled 'metrics: enabled'.
 # Allow webhook traffic from all sources.
-#- ../network-policy
+- ../network-policy
 
 # Uncomment the patches line if you enable Metrics
 patches:

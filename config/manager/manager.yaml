@@ -63,8 +63,20 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # k3s's default cluster pod range. NetSec keeps pod IPs out of the allowed address blocks.
+          - --pod-cidrs=10.42.0.0/16
+          # Single addresses inside the pod range that policies must still allow. On k3d these are
+          # the flannel.1 (VXLAN tunnel) addresses of the server and the agent: the network
+          # address of each node's pod range. Traffic that enters a NodePort on one node and is
+          # forwarded to a pod on the other arrives from these. Change the list if nodes are added.
+          - --extra-allowed-cidrs=10.42.0.0/32,10.42.1.0/32
         image: controller:latest
         name: manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports:
         - containerPort: 8081
           name: health

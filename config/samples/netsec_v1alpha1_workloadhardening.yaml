@@ -4,6 +4,9 @@ metadata:
   labels:
     app.kubernetes.io/name: netsec
     app.kubernetes.io/managed-by: kustomize
-  name: workloadhardening-sample
+  name: harden-tenants
 spec:
-  # TODO(user): Add fields here
+  namespaces: [tenant-a, tenant-b]
+  # Defaults fill in the rest: all four kinds, safe fields only,
+  # requests 100m / 128Mi, memory limit 512Mi, one rollout at a time, 5m timeout.
+  action: Plan

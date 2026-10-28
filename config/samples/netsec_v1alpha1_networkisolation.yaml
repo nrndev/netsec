@@ -4,6 +4,15 @@ metadata:
   labels:
     app.kubernetes.io/name: netsec
     app.kubernetes.io/managed-by: kustomize
-  name: networkisolation-sample
+  name: contain-gateway-dashboard
 spec:
-  # TODO(user): Add fields here
+  reason: "INC-1234: suspected compromise"
+  between:
+    - name: gateway
+      namespaces: [tenant-a]
+      podSelector:
+        matchLabels: {app: gateway}
+    - name: dashboard
+      namespaces: [tenant-b]
+      podSelector:
+        matchLabels: {app: dashboard}

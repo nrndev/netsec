@@ -1,0 +1,97 @@
+# NetSec demo workloads (tenant-a). Deploy with `make demo`.
+# No resources and no securityContext on purpose, so WorkloadHardening has
+# something to fix. nginx runs as root and breaks under runAsNonRoot;
+# nginx-unprivileged does not. Every Service listens on port 80, and the
+# nginx images include curl for traffic checks.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-a
+  labels:
+    app.kubernetes.io/part-of: netsec-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: tenant-a
+  labels:
+    app: gateway
+    app.kubernetes.io/part-of: netsec-demo
+spec:
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: nginx:1.31.6-alpine
+        ports:
+        - name: http
+          containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: tenant-a
+  labels:
+    app.kubernetes.io/part-of: netsec-demo
+spec:
+  selector:
+    app: gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: tenant-a
+  labels:
+    app: worker
+    app.kubernetes.io/part-of: netsec-demo
+spec:
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: nginxinc/nginx-unprivileged:1.31.6-alpine
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: tenant-a
+  labels:
+    app.kubernetes.io/part-of: netsec-demo
+spec:
+  selector:
+    app: worker
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
