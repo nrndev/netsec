@@ -47,7 +47,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install k3d
-        run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG="$K3D_VERSION" bash
+        run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh | TAG="$K3D_VERSION" bash
       # k3d-load-test-images only loads images that are already local.
       - name: Pull the test images
         run: |

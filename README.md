@@ -33,6 +33,22 @@ To install with Helm instead of `make deploy`, see [dist/chart/README.md](dist/c
 
 `make k3d-up` does not move your kubectl context. `make k3d-down` deletes the cluster. `make undeploy` removes the operator.
 
+## Install from a release
+
+Each release publishes a multi-arch image (`linux/amd64`, `linux/arm64`) and the Helm chart to GitHub Container Registry. The chart pulls `ghcr.io/nrndev/netsec:<chart version>` by default. Replace `0.1.0` with the release you want:
+
+```bash
+helm install netsec oci://ghcr.io/nrndev/charts/netsec --version 0.1.0 \
+  --kube-context <your-context> --namespace netsec-system --create-namespace \
+  --set 'manager.podCIDRs={10.42.0.0/16}' \
+  --set 'manager.extraAllowedCIDRs={10.42.0.0/32,10.42.1.0/32}'
+```
+
+The values shown are for a two-node k3d cluster. For your cluster, see [Running on other clusters](#running-on-other-clusters):
+
+- **`manager.podCIDRs`:** always set this. Without it, NetSec falls back to the ranges the Nodes report and marks each isolation `Degraded`.
+- **`manager.extraAllowedCIDRs`:** only needed when node or tunnel addresses sit inside the pod range.
+
 ## Using it
 
 ### Isolation
@@ -271,6 +287,18 @@ NetSec was built and tested on k3s (flannel + kube-router). Its "allow everythin
 
 - **`Ready=False`, `PodRangeMismatch`.** A pod in one of the groups has an IP outside the pod range (only IP families that have a configured range are checked). Policies are still applied and still block every in-range pod, but the isolated pod may not be covered by the `ipBlock` except list. Fix: set `--pod-cidrs` to the range those pods really use. The message names the pods and their IPs.
 - **`Degraded=True`, `NodesInPodRange`.** A Node's IP is inside the pod range and not listed in `--extra-allowed-cidrs`, as on flat-network clusters. Isolation still works, but traffic that arrives from node IPs (NodePort, LoadBalancer with `externalTrafficPolicy: Cluster`, some health checks) is blocked by NetSec's policies. Fix: list each such node IP as a `/32` in `--extra-allowed-cidrs` (and add new nodes as they join), or accept the blocked node traffic.
+
+## Releasing
+
+1. Push a tag `vX.Y.Z`, or `vX.Y.Z-rc.N` for a pre-release.
+2. `.github/workflows/release.yml` runs:
+   1. It checks that the tag is SemVer.
+   2. It runs CI: lint, unit tests, and e2e on k3d.
+   3. It pushes the image to `ghcr.io/nrndev/netsec:X.Y.Z` (and `X.Y`), then the chart to `oci://ghcr.io/nrndev/charts/netsec`.
+   4. It creates a GitHub release with the chart attached.
+3. After the first release, check that both packages (`netsec` and `charts/netsec`) are public in their GitHub package settings. GHCR can create new packages as private.
+
+CI (`.github/workflows/ci.yml`) runs the same checks on every push to `main` and on pull requests.
 
 ## Known limitations
 

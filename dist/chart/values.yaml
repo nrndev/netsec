@@ -42,7 +42,7 @@ manager:
   extraAllowedCIDRs: []
 
   image:
-    repository: controller
+    repository: ghcr.io/nrndev/netsec
     ## Image tag (defaults to Chart.appVersion if not set)
     ##
     # tag: ""
